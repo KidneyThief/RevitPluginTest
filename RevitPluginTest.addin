@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>RevitPluginTest Application</Name>
+    <Assembly>C:\cygwin64\home\kidne\_DEV\Revit\PluginTest\RevitPluginTest\bin\Debug\net10.0-windows\RevitPluginTest.dll</Assembly>
+    <FullClassName>RevitPluginTest.RevitPluginTestApplication</FullClassName>
+    <AddInId>2E25CED3-D7DD-4E86-AD0D-376A73AAA80F</AddInId>
+    <VendorId>PaperScorpionCo</VendorId>
+    <VendorDescription>tandersen, paperscorpionco.com</VendorDescription>
+  </AddIn>
+</RevitAddIns>
