@@ -9,6 +9,7 @@ using Autodesk.Revit.UI;
 using RevitPluginTest;
 using Line = System.Windows.Shapes.Line;
 using Ellipse = System.Windows.Shapes.Ellipse;
+using Point = System.Windows.Point;
 
 namespace RevitPluginTest.Core
 {
@@ -177,6 +178,68 @@ namespace RevitPluginTest.Core
                     Canvas.SetTop(block, (p.Y - bounds.Top) / dpiScale);
                     _canvas.Children.Add(block);
                 }
+            }
+
+            foreach (var arrow in DebugDraw.Arrows)
+            {
+                if (ViewProjector.TryProject(view, uiView, arrow.Start, out var p1) &&
+                    ViewProjector.TryProject(view, uiView, arrow.End, out var p2))
+                {
+                    var start = new Point((p1.X - bounds.Left) / dpiScale, (p1.Y - bounds.Top) / dpiScale);
+                    var end = new Point((p2.X - bounds.Left) / dpiScale, (p2.Y - bounds.Top) / dpiScale);
+                    var brush = new SolidColorBrush(arrow.Color);
+
+                    _canvas.Children.Add(new Line
+                    {
+                        X1 = start.X,
+                        Y1 = start.Y,
+                        X2 = end.X,
+                        Y2 = end.Y,
+                        Stroke = brush,
+                        StrokeThickness = arrow.Thickness
+                    });
+
+                    AddArrowhead(_canvas, start, end, brush, arrow.Thickness);
+                }
+            }
+        }
+
+        // Draws a simple chevron ("V") arrowhead at tip, oriented along the
+        // from->tip direction - computed in screen space (post-projection) so
+        // it looks the same size regardless of zoom/distance.
+        private static void AddArrowhead(Canvas canvas, Point from, Point tip, Brush stroke, double thickness)
+        {
+            var dx = tip.X - from.X;
+            var dy = tip.Y - from.Y;
+            var length = Math.Sqrt(dx * dx + dy * dy);
+
+            if (length < 1e-6)
+            {
+                return;
+            }
+
+            var backX = -dx / length;
+            var backY = -dy / length;
+
+            const double headLength = 12;
+            const double headAngle = 0.45; // radians, ~26 degrees
+
+            foreach (var angle in new[] { headAngle, -headAngle })
+            {
+                var cos = Math.Cos(angle);
+                var sin = Math.Sin(angle);
+                var wingX = backX * cos - backY * sin;
+                var wingY = backX * sin + backY * cos;
+
+                canvas.Children.Add(new Line
+                {
+                    X1 = tip.X,
+                    Y1 = tip.Y,
+                    X2 = tip.X + wingX * headLength,
+                    Y2 = tip.Y + wingY * headLength,
+                    Stroke = stroke,
+                    StrokeThickness = thickness
+                });
             }
         }
 

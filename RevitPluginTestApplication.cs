@@ -71,10 +71,14 @@ namespace RevitPluginTest
 
             if (oldContext != null)
             {
-                // Give Core a chance to close its own resources (the overlay
-                // window holds real OS resources) before the dictionary is
-                // cleared below - the name lookup needs to still resolve here.
-                _scheduler.Invoke("CloseOverlay", null);
+                // The one reload-time hook into Core - Core's own Initialize()
+                // decides what needs cleaning up (currently: closing the overlay
+                // window, resetting the graph). This call site is permanent;
+                // new cleanup steps get added inside Initialize() itself, not
+                // here, so Host never needs to change as Core grows. Must run
+                // before the dictionary is cleared below - the name lookup
+                // needs to still resolve here.
+                _scheduler.Invoke("Initialize", null);
 
                 // Must happen before Unload(): the dictionary's MethodInfo entries
                 // and any scheduled-call arguments could reference types from

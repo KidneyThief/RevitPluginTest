@@ -41,6 +41,13 @@ namespace RevitPluginTest.Core
             return true;
         }
 
+        [Schedulable("DrawArrow")]
+        public static bool DrawArrow(XYZ start, XYZ end, Color? color = null, double thickness = 2, double duration = -1)
+        {
+            DebugDraw.Arrow(null, start, end, color, thickness, duration);
+            return true;
+        }
+
         // First parameter is UIApplication, so Scheduler.Invoke supplies it
         // automatically - type DrawSelected() or DrawSelected(Color.Red) in
         // the console, no need to pass one yourself.

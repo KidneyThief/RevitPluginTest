@@ -19,20 +19,23 @@ namespace RevitPluginTest.Core
             DateTime CreatedAt { get; }
         }
 
-        // Thickness means stroke width for Line/Circle, font size for Text.
+        // Thickness means stroke width for Line/Circle/Arrow, font size for Text.
         public sealed record DebugLine(int Id, XYZ Start, XYZ End, Color Color, double Thickness, double Duration, DateTime CreatedAt) : IDebugElement;
         public sealed record DebugCircle(int Id, XYZ Center, double Radius, Color Color, double Thickness, double Duration, DateTime CreatedAt) : IDebugElement;
         public sealed record DebugText(int Id, XYZ Position, string Text, Color Color, double Thickness, double Duration, DateTime CreatedAt) : IDebugElement;
+        public sealed record DebugArrow(int Id, XYZ Start, XYZ End, Color Color, double Thickness, double Duration, DateTime CreatedAt) : IDebugElement;
 
         private static int _nextId = 1;
 
         private static readonly List<DebugLine> _lines = new();
         private static readonly List<DebugCircle> _circles = new();
         private static readonly List<DebugText> _texts = new();
+        private static readonly List<DebugArrow> _arrows = new();
 
         public static IReadOnlyList<DebugLine> Lines => _lines;
         public static IReadOnlyList<DebugCircle> Circles => _circles;
         public static IReadOnlyList<DebugText> Texts => _texts;
+        public static IReadOnlyList<DebugArrow> Arrows => _arrows;
 
         // id: pass null to add a new element, or an id previously returned
         // from this API to replace that element in place.
@@ -57,11 +60,19 @@ namespace RevitPluginTest.Core
             return entry.Id;
         }
 
+        public static int Arrow(int? id, XYZ start, XYZ end, Color? color = null, double thickness = 2, double duration = -1)
+        {
+            var entry = new DebugArrow(id ?? NextId(), start, end, color ?? Colors.Red, thickness, duration, DateTime.Now);
+            Replace(_arrows, entry);
+            return entry.Id;
+        }
+
         public static void ClearAll()
         {
             _lines.Clear();
             _circles.Clear();
             _texts.Clear();
+            _arrows.Clear();
         }
 
         // Drops anything whose duration has elapsed; -1 means indefinite.
@@ -70,6 +81,7 @@ namespace RevitPluginTest.Core
             RemoveExpiredFrom(_lines, now);
             RemoveExpiredFrom(_circles, now);
             RemoveExpiredFrom(_texts, now);
+            RemoveExpiredFrom(_arrows, now);
         }
 
         private static void Replace<T>(List<T> list, T entry) where T : IDebugElement
