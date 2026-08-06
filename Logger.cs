@@ -13,5 +13,10 @@ namespace RevitPluginTest
         {
             Entries.Add($"[{DateTime.Now:T}] {message}");
         }
+
+        public static void Clear()
+        {
+            Entries.Clear();
+        }
     }
 }

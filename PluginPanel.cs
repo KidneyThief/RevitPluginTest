@@ -39,6 +39,7 @@ namespace RevitPluginTest
 
             var buttonPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4) };
             buttonPanel.Children.Add(CreateCommandButton("Reload Core", "ReloadCore"));
+            buttonPanel.Children.Add(CreateCommandButton("Clear Log", "ClearLog"));
             Grid.SetRow(buttonPanel, 0);
             root.Children.Add(buttonPanel);
 
@@ -79,7 +80,19 @@ namespace RevitPluginTest
             Grid.SetRow(_dynamicContainer, 3);
             root.Children.Add(_dynamicContainer);
 
-            var commandBox = new TextBox { Margin = new Thickness(4, 0, 4, 4) };
+            var commandRow = new DockPanel { Margin = new Thickness(4, 0, 4, 4) };
+
+            var promptLabel = new TextBlock
+            {
+                Text = "==> ",
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            DockPanel.SetDock(promptLabel, Dock.Left);
+            commandRow.Children.Add(promptLabel);
+
+            var commandBox = new TextBox();
+            commandRow.Children.Add(commandBox);
 
             commandBox.PreviewKeyDown += (sender, e) =>
             {
@@ -147,8 +160,8 @@ namespace RevitPluginTest
                 commandBox.Clear();
             };
 
-            Grid.SetRow(commandBox, 4);
-            root.Children.Add(commandBox);
+            Grid.SetRow(commandRow, 4);
+            root.Children.Add(commandRow);
 
             var log = new ListBox
             {
@@ -320,16 +333,22 @@ namespace RevitPluginTest
 
         // section is auto-created (separator + button row) the first time
         // it's used, and reused for subsequent buttons in the same section.
-        public void AddDynamicButton(string section, string label, string commandName)
+        // Pass null/empty for a headerless row - no separator, just buttons.
+        public void AddDynamicButton(string? section, string label, string commandName)
         {
-            if (!_dynamicSections.TryGetValue(section, out var sectionPanel))
+            var key = section ?? string.Empty;
+
+            if (!_dynamicSections.TryGetValue(key, out var sectionPanel))
             {
-                _dynamicContainer.Children.Add(CreateSeparator($"=== {section} ==="));
+                if (!string.IsNullOrEmpty(key))
+                {
+                    _dynamicContainer.Children.Add(CreateSeparator($"=== {key} ==="));
+                }
 
                 sectionPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4) };
                 _dynamicContainer.Children.Add(sectionPanel);
 
-                _dynamicSections[section] = sectionPanel;
+                _dynamicSections[key] = sectionPanel;
             }
 
             sectionPanel.Children.Add(CreateCommandButton(label, commandName));

@@ -9,7 +9,7 @@ namespace RevitPluginTest
     {
         public static PluginPanel? Current { get; set; }
 
-        public static void AddButton(string section, string label, string commandName)
+        public static void AddButton(string? section, string label, string commandName)
         {
             Current?.AddDynamicButton(section, label, commandName);
         }

@@ -22,6 +22,62 @@ namespace RevitPluginTest.Core
             return true;
         }
 
+        // First parameter is UIApplication, so Scheduler.Invoke supplies it
+        // automatically. Adds a node for each currently selected element,
+        // located at its bounding box center (same representative-point
+        // approach DrawSelected uses, since it works regardless of element
+        // type). The element's own ElementId becomes the node's ID.
+        [Schedulable("AddSelectedToGraph")]
+        public static bool AddSelectedToGraph(UIApplication uiApp)
+        {
+            var uidoc = uiApp.ActiveUIDocument;
+
+            if (uidoc == null)
+            {
+                Logger.Log("AddSelectedToGraph: no active document.");
+                return false;
+            }
+
+            var selectedIds = uidoc.Selection.GetElementIds();
+
+            if (selectedIds.Count == 0)
+            {
+                Logger.Log("AddSelectedToGraph: nothing selected.");
+                return false;
+            }
+
+            var added = 0;
+
+            foreach (var id in selectedIds)
+            {
+                var bbox = uidoc.Document.GetElement(id)?.get_BoundingBox(null);
+
+                if (bbox == null)
+                {
+                    continue;
+                }
+
+                var center = (bbox.Min + bbox.Max).Multiply(0.5);
+                var node = new tNode((int)id.Value, center);
+
+                if (_graph.AddNode(in node))
+                {
+                    added++;
+                }
+            }
+
+            Logger.Log($"AddSelectedToGraph: added {added} node(s).");
+            return true;
+        }
+
+        // Connects every node currently in the graph to every other node.
+        [Schedulable("BuildGraph")]
+        public static bool BuildGraph()
+        {
+            _graph.BuildCompleteGraph();
+            return true;
+        }
+
         // Called by CoreLifecycle.Initialize() before Unload() - not
         // individually schedulable, since Initialize() is the one reload-time
         // entry point Host knows about. Not strictly required for pure

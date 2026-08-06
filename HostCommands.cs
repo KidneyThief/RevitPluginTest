@@ -19,5 +19,12 @@ namespace RevitPluginTest
             app.ReloadCore();
             return true;
         }
+
+        [Schedulable("ClearLog")]
+        public static bool ClearLog()
+        {
+            Logger.Clear();
+            return true;
+        }
     }
 }

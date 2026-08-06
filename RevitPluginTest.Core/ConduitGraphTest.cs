@@ -44,6 +44,27 @@ namespace RevitPluginTest.Core
             _neighborMap.Clear();
         }
 
+        // False if inFromId isn't a known node, or inToId was already a neighbor.
+        public bool AddNeighbor(int inFromId, int inToId)
+        {
+            return _neighborMap.TryGetValue(inFromId, out var neighbors) && neighbors.Add(inToId);
+        }
+
+        // Connects every node to every other node.
+        public void BuildCompleteGraph()
+        {
+            foreach (var id in _graphNodeMap.Keys)
+            {
+                foreach (var otherId in _graphNodeMap.Keys)
+                {
+                    if (id != otherId)
+                    {
+                        AddNeighbor(id, otherId);
+                    }
+                }
+            }
+        }
+
         // Draws a circle at every node and an arrow to each of its neighbors.
         public void DrawGraph()
         {

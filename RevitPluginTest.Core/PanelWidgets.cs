@@ -11,7 +11,14 @@ namespace RevitPluginTest.Core
         [Schedulable("RegisterPanelWidgets", Quiet = true)]
         public static bool RegisterPanelWidgets()
         {
-            DynamicPanel.AddButton("Graph Tests", "Select Similar", "SelectAllSimilar");
+            // Headerless row - sits directly below the static Debug Overlay
+            // row rather than under its own section label.
+            DynamicPanel.AddButton(null, "Select Similar", "SelectAllSimilar");
+            DynamicPanel.AddButton(null, "Draw Selected", "DrawSelected");
+
+            DynamicPanel.AddButton("Graph Tests", "Add Selected", "AddSelectedToGraph");
+            DynamicPanel.AddButton("Graph Tests", "Build Graph", "BuildGraph");
+            DynamicPanel.AddButton("Graph Tests", "Draw Graph", "DrawGraph");
             return true;
         }
     }
