@@ -17,17 +17,23 @@
 
   <ItemGroup>
     <Reference Include="RevitAPI">
-      <HintPath>..\..\..\..\..\..\..\Program Files\Autodesk\Revit 2027\RevitAPI.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPI.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="RevitAPIUI">
-      <HintPath>..\..\..\..\..\..\..\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\Revit 2027\RevitAPIUI.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>
 
+  <!-- RevitPluginTest.addin (checked into the repo) is a TEMPLATE containing
+       the __ASSEMBLY_PATH__ token, not a usable manifest on its own - the
+       real, deployed manifest is generated here on every build by
+       substituting $(TargetPath) (this build's actual absolute output DLL
+       path), so it's always correct regardless of where the repo is cloned
+       to. No manual editing needed for a fresh clone. -->
   <Target Name="CopyAddinManifest" AfterTargets="Build">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\RevitPluginTest.addin" DestinationFolder="$(APPDATA)\Autodesk\Revit\Addins\2027\" />
+    <Exec Command="powershell -NoProfile -Command &quot;(Get-Content -Raw '$(MSBuildProjectDirectory)\RevitPluginTest.addin').Replace('__ASSEMBLY_PATH__', '$(TargetPath)') | Set-Content -Path '$(APPDATA)\Autodesk\Revit\Addins\2027\RevitPluginTest.addin'&quot;" />
   </Target>
 
 </Project>
