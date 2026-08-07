@@ -4,13 +4,6 @@ using Colors = System.Windows.Media.Colors;
 
 namespace RevitPluginTest.Core
 {
-    public enum eGraphType
-    {
-        None,
-        Circuits,
-        Conduit
-    }
-
     public struct tNode
     {
         public int ID;
@@ -34,11 +27,68 @@ namespace RevitPluginTest.Core
         public double Length { get; }
         public IReadOnlyList<XYZ> Waypoints { get; }
 
-        public tConduitPath(int inSourceId, double inLength, IReadOnlyList<XYZ> inWaypoints)
+        // One entry per segment (Waypoints.Count - 1): how many conduits
+        // are bundled into that segment. 1 means an ordinary, unshared
+        // segment; 2+ means a shared trunk from GraphTestFunctions.MergeParallelRuns,
+        // drawn as that many parallel lines instead of a single one. All 1s
+        // for a freshly routed (not yet merged) path.
+        public IReadOnlyList<int> MergedSegments { get; }
+
+        public tConduitPath(int inSourceId, double inLength, IReadOnlyList<XYZ> inWaypoints, IReadOnlyList<int>? inMergedSegments = null)
         {
             SourceId = inSourceId;
             Length = inLength;
             Waypoints = inWaypoints;
+            MergedSegments = inMergedSegments ?? Enumerable.Repeat(1, Math.Max(0, inWaypoints.Count - 1)).ToArray();
+        }
+    }
+
+    // A physical bundle of conduits sharing one straight trunk line, built
+    // by GraphTestFunctions.MergeParallelRuns. Count is always exactly
+    // MemberNodeIds.Count - the true, final membership - not a running
+    // total accumulated during clustering, since every member is recorded
+    // explicitly here rather than each path keeping its own local count.
+    public sealed class tConduitRun
+    {
+        public XYZ Start { get; }
+        public XYZ End { get; }
+        public IReadOnlyList<int> MemberNodeIds { get; }
+        public int Count => MemberNodeIds.Count;
+
+        public tConduitRun(XYZ inStart, XYZ inEnd, IReadOnlyList<int> inMemberNodeIds)
+        {
+            Start = inStart;
+            End = inEnd;
+            MemberNodeIds = inMemberNodeIds;
+        }
+    }
+
+    // The fully solved graph, built once BuildGraph finishes routing and
+    // merging: every source and receptacle node, every routing corner that
+    // isn't already covered by a conduit run's own start/end, every conduit
+    // run, and each non-source node's complete routed path (waypoints +
+    // per-segment merge count) - everything DrawGraph needs, so it never
+    // has to reach past this into other internal state.
+    public sealed class tGraphSolution
+    {
+        public IReadOnlyDictionary<int, tNode> SourceNodes { get; }
+        public IReadOnlyDictionary<int, tNode> NonSourceNodes { get; }
+        public IReadOnlyList<XYZ> IntermediatePoints { get; }
+        public IReadOnlyList<tConduitRun> ConduitRuns { get; }
+        public IReadOnlyDictionary<int, tConduitPath> NonSourcePaths { get; }
+
+        public tGraphSolution(
+            IReadOnlyDictionary<int, tNode> inSourceNodes,
+            IReadOnlyDictionary<int, tNode> inNonSourceNodes,
+            IReadOnlyList<XYZ> inIntermediatePoints,
+            IReadOnlyList<tConduitRun> inConduitRuns,
+            IReadOnlyDictionary<int, tConduitPath> inNonSourcePaths)
+        {
+            SourceNodes = inSourceNodes;
+            NonSourceNodes = inNonSourceNodes;
+            IntermediatePoints = inIntermediatePoints;
+            ConduitRuns = inConduitRuns;
+            NonSourcePaths = inNonSourcePaths;
         }
     }
 
@@ -47,7 +97,7 @@ namespace RevitPluginTest.Core
         private readonly Dictionary<int, tNode> _graphNodeMap = new();
         private readonly Dictionary<int, HashSet<int>> _neighborMap = new();
 
-        // Right-angle route geometry for edges built by BuildConduitGraph,
+        // Right-angle route geometry for edges built by BuildGraph,
         // keyed by the non-source node's id (each has exactly one). DrawGraph
         // uses this to render the actual routed path instead of a straight
         // arrow; edges from other strategies (Circuits, complete mesh) have
@@ -55,6 +105,16 @@ namespace RevitPluginTest.Core
         private readonly Dictionary<int, tConduitPath> _conduitPaths = new();
 
         public IEnumerable<tNode> Nodes => _graphNodeMap.Values;
+
+        // Keyed by the non-source node id, same as SetConduitPath.
+        public IReadOnlyDictionary<int, tConduitPath> ConduitPaths => _conduitPaths;
+
+        public tGraphSolution? Solution { get; private set; }
+
+        public void SetSolution(tGraphSolution inSolution)
+        {
+            Solution = inSolution;
+        }
 
         public bool AddNode(in tNode inNode)
         {
@@ -100,6 +160,7 @@ namespace RevitPluginTest.Core
             _graphNodeMap.Clear();
             _neighborMap.Clear();
             _conduitPaths.Clear();
+            Solution = null;
         }
 
         // Keeps nodes, drops edges - each BuildXGraph strategy calls this
@@ -113,6 +174,7 @@ namespace RevitPluginTest.Core
             }
 
             _conduitPaths.Clear();
+            Solution = null;
         }
 
         // False if inFromId isn't a known node, or inToId was already a neighbor.
@@ -123,78 +185,10 @@ namespace RevitPluginTest.Core
 
         // Records the actual routed geometry for the edge into inNonSourceId,
         // so DrawGraph can render the real right-angle path instead of a
-        // straight arrow. BuildConduitGraph calls this right after AddNeighbor.
+        // straight arrow. BuildGraph calls this right after AddNeighbor.
         public void SetConduitPath(int inNonSourceId, tConduitPath inPath)
         {
             _conduitPaths[inNonSourceId] = inPath;
-        }
-
-        // Multi-source Dijkstra: every source node starts already "visited"
-        // with a cumulative path length of zero, then repeatedly extends
-        // whichever not-yet-visited node has the shortest total path back to
-        // a source - fromNode's own accumulated distance plus the direct hop
-        // to it - not just the shortest single hop (that would be Prim's,
-        // which minimizes total wire length but can still saddle an
-        // individual node with a long path if it happens to attach deep into
-        // an already-long branch). One directed edge per connection - a tree
-        // needs no reverse arrow. Falls back to an arbitrary root if no node
-        // is a source.
-        public void BuildCircuits()
-        {
-            if (_graphNodeMap.Count < 2)
-            {
-                return;
-            }
-
-            var sourceIds = _graphNodeMap.Values.Where(node => node.IsSource).Select(node => node.ID).ToList();
-
-            if (sourceIds.Count == 0)
-            {
-                sourceIds.Add(_graphNodeMap.Keys.First());
-            }
-
-            var pathLength = new Dictionary<int, double>();
-            var visited = new HashSet<int>();
-
-            foreach (var id in sourceIds)
-            {
-                pathLength[id] = 0;
-                visited.Add(id);
-            }
-
-            while (visited.Count < _graphNodeMap.Count)
-            {
-                var bestPathLength = double.MaxValue;
-                var bestFromId = -1;
-                var bestToId = -1;
-
-                foreach (var fromId in visited)
-                {
-                    var fromLocation = _graphNodeMap[fromId].Location;
-                    var fromPathLength = pathLength[fromId];
-
-                    foreach (var toId in _graphNodeMap.Keys)
-                    {
-                        if (visited.Contains(toId))
-                        {
-                            continue;
-                        }
-
-                        var candidatePathLength = fromPathLength + fromLocation.DistanceTo(_graphNodeMap[toId].Location);
-
-                        if (candidatePathLength < bestPathLength)
-                        {
-                            bestPathLength = candidatePathLength;
-                            bestFromId = fromId;
-                            bestToId = toId;
-                        }
-                    }
-                }
-
-                AddNeighbor(bestFromId, bestToId);
-                visited.Add(bestToId);
-                pathLength[bestToId] = bestPathLength;
-            }
         }
 
         // Connects two wall-perpendicular directions with right-angle turns
@@ -317,38 +311,90 @@ namespace RevitPluginTest.Core
             return waypoints;
         }
 
-        // Draws a circle at every node and an arrow to each of its neighbors -
-        // or, for a conduit-routed edge, the actual right-angle path instead
-        // of a straight arrow.
-        public void DrawGraph()
+        // True if any segment of inWaypoints properly crosses any segment in
+        // inExistingSegments, in plan (X,Y only - different routing heights
+        // don't conflict physically, but "crossing" here means overlapping
+        // in plan view, which is what's visually confusing on the overlay).
+        // Segments that only touch - e.g. two paths sharing the same
+        // source's location - don't count; only a genuine mid-segment
+        // crossing does.
+        public static bool CrossesAny(IReadOnlyList<XYZ> inWaypoints, IReadOnlyList<(XYZ A, XYZ B)> inExistingSegments)
+        {
+            for (var i = 0; i < inWaypoints.Count - 1; i++)
+            {
+                for (var j = 0; j < inExistingSegments.Count; j++)
+                {
+                    if (SegmentsCross(inWaypoints[i], inWaypoints[i + 1], inExistingSegments[j].A, inExistingSegments[j].B))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool SegmentsCross(XYZ p1, XYZ p2, XYZ p3, XYZ p4)
+        {
+            double Orientation(XYZ o, XYZ a, XYZ b) => (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
+
+            var d1 = Orientation(p3, p4, p1);
+            var d2 = Orientation(p3, p4, p2);
+            var d3 = Orientation(p1, p2, p3);
+            var d4 = Orientation(p1, p2, p4);
+
+            return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+        }
+
+        // Draws just a circle at every node, no edges - green for sources,
+        // blue for receptacles.
+        public void DrawNodes()
         {
             foreach (var node in _graphNodeMap.Values)
             {
                 DebugDraw.Circle(null, node.Location, 1.0, node.IsSource ? Colors.Green : Colors.Blue);
+            }
+        }
 
-                if (!_neighborMap.TryGetValue(node.ID, out var neighbors))
+        // Draws exclusively from Solution - the fully solved graph
+        // GraphTestFunctions.MergeParallelRuns builds - rather than reaching
+        // into this instance's own node/neighbor/path state directly, so
+        // there's one authoritative source for what gets rendered. Clears
+        // the overlay first: every draw call below creates a brand new
+        // element (id: null) rather than replacing one, so without this,
+        // repeated builds would just keep accumulating old drawings on top
+        // of new ones instead of replacing them.
+        public void DrawGraph()
+        {
+            DebugDraw.ClearAll();
+
+            if (Solution == null)
+            {
+                return;
+            }
+
+            foreach (var node in Solution.SourceNodes.Values)
+            {
+                DebugDraw.Circle(null, node.Location, 1.0, Colors.Green);
+            }
+
+            foreach (var node in Solution.NonSourceNodes.Values)
+            {
+                DebugDraw.Circle(null, node.Location, 1.0, Colors.Blue);
+            }
+
+            foreach (var path in Solution.NonSourcePaths.Values)
+            {
+                for (var i = 0; i < path.Waypoints.Count - 1; i++)
                 {
-                    continue;
-                }
-
-                foreach (var neighborId in neighbors)
-                {
-                    if (!_graphNodeMap.TryGetValue(neighborId, out var neighborNode))
+                    if (path.MergedSegments[i] > 1)
                     {
-                        continue;
+                        DebugDraw.ConduitRun(path.Waypoints[i], path.Waypoints[i + 1], color: Colors.Purple);
                     }
-
-                    if (_conduitPaths.TryGetValue(neighborId, out var conduitPath) && conduitPath.SourceId == node.ID)
+                    else
                     {
-                        for (var i = 0; i < conduitPath.Waypoints.Count - 1; i++)
-                        {
-                            DebugDraw.Line(null, conduitPath.Waypoints[i], conduitPath.Waypoints[i + 1]);
-                        }
-
-                        continue;
+                        DebugDraw.Line(null, path.Waypoints[i], path.Waypoints[i + 1]);
                     }
-
-                    DebugDraw.Arrow(null, node.Location, neighborNode.Location);
                 }
             }
         }

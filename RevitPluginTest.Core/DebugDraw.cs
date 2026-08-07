@@ -67,6 +67,34 @@ namespace RevitPluginTest.Core
             return entry.Id;
         }
 
+        // A rectangle outline from start to end (the run's centerline),
+        // fixed at the width of 5 lines spaced spacing apart - representing
+        // a bundle of conduits sharing one straight trunk line as a single
+        // bank, rather than drawing one line per conduit.
+        public static void ConduitRun(XYZ start, XYZ end, double spacing = 0.5, Color? color = null, double thickness = 2, double duration = -1)
+        {
+            var along = end - start;
+
+            if (along.IsZeroLength())
+            {
+                return;
+            }
+
+            const int lineCount = 5;
+
+            var direction = along.Normalize();
+            var perpendicular = new XYZ(-direction.Y, direction.X, 0);
+            var halfWidth = (lineCount - 1) * spacing / 2.0;
+
+            var sideA = perpendicular.Multiply(-halfWidth);
+            var sideB = perpendicular.Multiply(halfWidth);
+
+            Line(null, start + sideA, end + sideA, color, thickness, duration);
+            Line(null, start + sideB, end + sideB, color, thickness, duration);
+            Line(null, start + sideA, start + sideB, color, thickness, duration);
+            Line(null, end + sideA, end + sideB, color, thickness, duration);
+        }
+
         public static void ClearAll()
         {
             _lines.Clear();

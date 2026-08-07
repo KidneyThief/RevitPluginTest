@@ -22,13 +22,17 @@ namespace RevitPluginTest.Core
 
             DynamicPanel.NewLine("Graph Tests");
             DynamicPanel.AddButton("Graph Tests", "Find Nearest Source", "FindNearestSource");
+            DynamicPanel.AddButton("Graph Tests", "Draw Nodes", "DrawNodes");
 
             DynamicPanel.NewLine("Graph Tests");
-            DynamicPanel.AddDropdown("Graph Tests", "Type:", Enum.GetNames(typeof(eGraphType)), "SetGraphType");
             DynamicPanel.AddButton("Graph Tests", "Build Graph", "BuildGraph");
+            DynamicPanel.AddButton("Graph Tests", "Draw Graph", "DrawGraph");
 
             DynamicPanel.NewLine("Graph Tests");
-            DynamicPanel.AddButton("Graph Tests", "Draw Graph", "DrawGraph");
+            DynamicPanel.AddCheckbox("Graph Tests", "Allow Intersections", GraphTestFunctions.AllowIntersections, "SetAllowIntersections");
+
+            DynamicPanel.NewLine("Graph Tests");
+            DynamicPanel.AddSlider("Graph Tests", "Run Tolerance:", 0, 10, GraphTestFunctions.RunTolerance, "SetRunTolerance");
             return true;
         }
     }

@@ -433,6 +433,62 @@ namespace RevitPluginTest
             sectionPanel.Children.Add(comboBox);
         }
 
+        // Fires InvokeCommand(commandName, isChecked) whenever the checkbox
+        // is toggled - Core owns the actual setting, this just renders it
+        // and forwards the change.
+        public void AddDynamicCheckbox(string? section, string label, bool initialValue, string commandName)
+        {
+            var checkBox = new CheckBox
+            {
+                Content = label,
+                Foreground = Brushes.White,
+                Margin = new Thickness(4),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsChecked = initialValue
+            };
+
+            checkBox.Checked += (sender, e) => RevitPluginTestApplication.Current?.InvokeCommand(commandName, true);
+            checkBox.Unchecked += (sender, e) => RevitPluginTestApplication.Current?.InvokeCommand(commandName, false);
+
+            GetOrCreateSection(section).Children.Add(checkBox);
+        }
+
+        // Fires InvokeCommand(commandName, value) on every drag tick - cheap
+        // since it just updates a stored setting, not a rebuild. label's
+        // current value is appended live so the number is visible without a
+        // separate readout control.
+        public void AddDynamicSlider(string? section, string label, double min, double max, double initialValue, string commandName)
+        {
+            var sectionPanel = GetOrCreateSection(section);
+
+            var valueLabel = new TextBlock
+            {
+                Text = $"{label} {initialValue:F1}",
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 0, 4, 0)
+            };
+
+            var slider = new Slider
+            {
+                Minimum = min,
+                Maximum = max,
+                Value = initialValue,
+                Width = 100,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 4, 4, 4)
+            };
+
+            slider.ValueChanged += (sender, e) =>
+            {
+                valueLabel.Text = $"{label} {slider.Value:F1}";
+                RevitPluginTestApplication.Current?.InvokeCommand(commandName, slider.Value);
+            };
+
+            sectionPanel.Children.Add(valueLabel);
+            sectionPanel.Children.Add(slider);
+        }
+
         private StackPanel GetOrCreateSection(string? section)
         {
             var key = section ?? string.Empty;

@@ -19,6 +19,16 @@ namespace RevitPluginTest
             Current?.AddDynamicDropdown(section, label, options, commandName);
         }
 
+        public static void AddCheckbox(string? section, string label, bool initialValue, string commandName)
+        {
+            Current?.AddDynamicCheckbox(section, label, initialValue, commandName);
+        }
+
+        public static void AddSlider(string? section, string label, double min, double max, double initialValue, string commandName)
+        {
+            Current?.AddDynamicSlider(section, label, min, max, initialValue, commandName);
+        }
+
         public static void NewLine(string? section)
         {
             Current?.AddDynamicNewLine(section);
