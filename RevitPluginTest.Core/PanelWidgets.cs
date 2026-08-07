@@ -16,8 +16,18 @@ namespace RevitPluginTest.Core
             DynamicPanel.AddButton(null, "Select Similar", "SelectAllSimilar");
             DynamicPanel.AddButton(null, "Draw Selected", "DrawSelected");
 
-            DynamicPanel.AddButton("Graph Tests", "Add Selected", "AddSelectedToGraph");
+            DynamicPanel.AddButton("Graph Tests", "Initialize", "Initialize");
+            DynamicPanel.AddButton("Graph Tests", "Add Sources", "AddSourcesToGraph");
+            DynamicPanel.AddButton("Graph Tests", "Add Receptacles", "AddReceptaclesToGraph");
+
+            DynamicPanel.NewLine("Graph Tests");
+            DynamicPanel.AddButton("Graph Tests", "Find Nearest Source", "FindNearestSource");
+
+            DynamicPanel.NewLine("Graph Tests");
+            DynamicPanel.AddDropdown("Graph Tests", "Type:", Enum.GetNames(typeof(eGraphType)), "SetGraphType");
             DynamicPanel.AddButton("Graph Tests", "Build Graph", "BuildGraph");
+
+            DynamicPanel.NewLine("Graph Tests");
             DynamicPanel.AddButton("Graph Tests", "Draw Graph", "DrawGraph");
             return true;
         }

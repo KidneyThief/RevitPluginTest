@@ -13,6 +13,7 @@ namespace RevitPluginTest.Core
         public static bool Initialize()
         {
             DebugOverlay.CloseOverlay();
+            DebugOverlay.ClearOverlay();
             GraphTestFunctions.ResetGraph();
             return true;
         }

@@ -23,7 +23,8 @@ namespace RevitPluginTest
         private string _pendingText = string.Empty;
 
         private readonly StackPanel _dynamicContainer = new();
-        private readonly Dictionary<string, StackPanel> _dynamicSections = new();
+        private readonly Dictionary<string, StackPanel> _dynamicCurrentRow = new();
+        private readonly HashSet<string> _dynamicSectionHeaders = new();
 
         public PluginPanel()
         {
@@ -86,7 +87,11 @@ namespace RevitPluginTest
             {
                 Text = "==> ",
                 FontWeight = FontWeights.Bold,
-                VerticalAlignment = VerticalAlignment.Center
+                Foreground = Brushes.Black,
+                Background = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                TextAlignment = TextAlignment.Center,
+                Padding = new Thickness(2, 0, 2, 0)
             };
             DockPanel.SetDock(promptLabel, Dock.Left);
             commandRow.Children.Add(promptLabel);
@@ -197,7 +202,58 @@ namespace RevitPluginTest
             Grid.SetRow(log, 5);
             root.Children.Add(log);
 
+            var logAutoScroll = true;
+
+            log.Loaded += (sender, e) =>
+            {
+                var scrollViewer = FindScrollViewer(log);
+
+                if (scrollViewer == null)
+                {
+                    return;
+                }
+
+                scrollViewer.ScrollChanged += (s2, e2) =>
+                {
+                    // A user-driven scroll leaves the extent unchanged; a new
+                    // log entry growing the content does not - only the
+                    // former should affect whether we keep auto-scrolling.
+                    if (e2.ExtentHeightChange == 0)
+                    {
+                        logAutoScroll = scrollViewer.VerticalOffset >= scrollViewer.ScrollableHeight - 1.0;
+                    }
+                };
+            };
+
+            Logger.Entries.CollectionChanged += (sender, e) =>
+            {
+                if (logAutoScroll && log.Items.Count > 0)
+                {
+                    log.ScrollIntoView(log.Items[^1]);
+                }
+            };
+
             Content = root;
+        }
+
+        private static ScrollViewer? FindScrollViewer(DependencyObject parent)
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+
+                if (child is ScrollViewer scrollViewer)
+                {
+                    return scrollViewer;
+                }
+
+                if (FindScrollViewer(child) is { } found)
+                {
+                    return found;
+                }
+            }
+
+            return null;
         }
 
         private void HandleTabCompletion(TextBox commandBox)
@@ -331,33 +387,85 @@ namespace RevitPluginTest
             return (string.Empty, text);
         }
 
-        // section is auto-created (separator + button row) the first time
-        // it's used, and reused for subsequent buttons in the same section.
-        // Pass null/empty for a headerless row - no separator, just buttons.
+        // section is auto-created (separator + widget row) the first time
+        // it's used, and reused for subsequent widgets in the same section.
+        // Pass null/empty for a headerless row - no separator, just widgets.
         public void AddDynamicButton(string? section, string label, string commandName)
+        {
+            GetOrCreateSection(section).Children.Add(CreateCommandButton(label, commandName));
+        }
+
+        // Fires InvokeCommand(commandName, selectedOption) whenever the
+        // selection changes. options are plain strings so Host never needs
+        // to know about whatever enum/type Core is actually choosing between.
+        public void AddDynamicDropdown(string? section, string label, IReadOnlyList<string> options, string commandName)
+        {
+            var sectionPanel = GetOrCreateSection(section);
+
+            sectionPanel.Children.Add(new TextBlock
+            {
+                Text = label,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(4, 0, 4, 0)
+            });
+
+            var comboBox = new ComboBox
+            {
+                Margin = new Thickness(0, 4, 4, 4),
+                MinWidth = 80,
+                ItemsSource = options
+            };
+
+            if (options.Count > 0)
+            {
+                comboBox.SelectedIndex = 0;
+            }
+
+            comboBox.SelectionChanged += (sender, e) =>
+            {
+                if (comboBox.SelectedItem is string selected)
+                {
+                    RevitPluginTestApplication.Current?.InvokeCommand(commandName, selected);
+                }
+            };
+
+            sectionPanel.Children.Add(comboBox);
+        }
+
+        private StackPanel GetOrCreateSection(string? section)
         {
             var key = section ?? string.Empty;
 
-            if (!_dynamicSections.TryGetValue(key, out var sectionPanel))
+            if (_dynamicCurrentRow.TryGetValue(key, out var row))
             {
-                if (!string.IsNullOrEmpty(key))
-                {
-                    _dynamicContainer.Children.Add(CreateSeparator($"=== {key} ==="));
-                }
-
-                sectionPanel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4) };
-                _dynamicContainer.Children.Add(sectionPanel);
-
-                _dynamicSections[key] = sectionPanel;
+                return row;
             }
 
-            sectionPanel.Children.Add(CreateCommandButton(label, commandName));
+            if (!string.IsNullOrEmpty(key) && _dynamicSectionHeaders.Add(key))
+            {
+                _dynamicContainer.Children.Add(CreateSeparator($"=== {key} ==="));
+            }
+
+            row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4) };
+            _dynamicContainer.Children.Add(row);
+
+            _dynamicCurrentRow[key] = row;
+            return row;
+        }
+
+        // Forces the next widget added to `section` onto a fresh row, without
+        // repeating the section's header separator.
+        public void AddDynamicNewLine(string? section)
+        {
+            _dynamicCurrentRow.Remove(section ?? string.Empty);
         }
 
         public void ClearDynamicWidgets()
         {
             _dynamicContainer.Children.Clear();
-            _dynamicSections.Clear();
+            _dynamicCurrentRow.Clear();
+            _dynamicSectionHeaders.Clear();
         }
 
         private static TextBlock CreateSeparator(string text)

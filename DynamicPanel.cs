@@ -14,6 +14,16 @@ namespace RevitPluginTest
             Current?.AddDynamicButton(section, label, commandName);
         }
 
+        public static void AddDropdown(string? section, string label, IReadOnlyList<string> options, string commandName)
+        {
+            Current?.AddDynamicDropdown(section, label, options, commandName);
+        }
+
+        public static void NewLine(string? section)
+        {
+            Current?.AddDynamicNewLine(section);
+        }
+
         public static void ClearWidgets()
         {
             Current?.ClearDynamicWidgets();
