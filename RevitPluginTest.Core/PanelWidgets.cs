@@ -33,6 +33,18 @@ namespace RevitPluginTest.Core
 
             DynamicPanel.NewLine("Graph Tests");
             DynamicPanel.AddSlider("Graph Tests", "Run Tolerance:", 0, 10, GraphTestFunctions.RunTolerance, "SetRunTolerance");
+
+            DynamicPanel.AddSlider("Grid Tests", "Grid Resolution:", 4, 24, GridTest.GridResolution, "SetGridResolution", step: 4);
+
+            DynamicPanel.NewLine("Grid Tests");
+            DynamicPanel.AddButton("Grid Tests", "Create Grid", "CreateGrid");
+            DynamicPanel.AddButton("Grid Tests", "Draw Grid", "DrawGrid");
+            DynamicPanel.AddCheckbox("Grid Tests", "Connections", GridTest.ShowConnections, "SetShowConnections");
+
+            DynamicPanel.NewLine("Grid Tests");
+            DynamicPanel.AddSlider("Grid Tests", "Obstruction Size:", 5, 24, GridTest.ObstructionSize, "SetObstructionSize", step: 1);
+            DynamicPanel.NewLine("Grid Tests");
+            DynamicPanel.AddObstructionButton("Grid Tests", "Add Obstruction", "Adding...", "AddObstruction");
             return true;
         }
     }

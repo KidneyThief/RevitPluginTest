@@ -395,6 +395,20 @@ namespace RevitPluginTest
             GetOrCreateSection(section).Children.Add(CreateCommandButton(label, commandName));
         }
 
+        // Same as AddDynamicButton, but its Content polls
+        // OverlayState.IsAddingObstruction (250ms, same cadence as the
+        // overlay visibility checkbox) and swaps to activeLabel while true.
+        public void AddDynamicObstructionButton(string? section, string idleLabel, string activeLabel, string commandName)
+        {
+            var button = CreateCommandButton(idleLabel, commandName);
+
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            timer.Tick += (sender, e) => button.Content = OverlayState.IsAddingObstruction ? activeLabel : idleLabel;
+            timer.Start();
+
+            GetOrCreateSection(section).Children.Add(button);
+        }
+
         // Fires InvokeCommand(commandName, selectedOption) whenever the
         // selection changes. options are plain strings so Host never needs
         // to know about whatever enum/type Core is actually choosing between.
@@ -456,8 +470,12 @@ namespace RevitPluginTest
         // Fires InvokeCommand(commandName, value) on every drag tick - cheap
         // since it just updates a stored setting, not a rebuild. label's
         // current value is appended live so the number is visible without a
-        // separate readout control.
-        public void AddDynamicSlider(string? section, string label, double min, double max, double initialValue, string commandName)
+        // separate readout control. step > 0 snaps the thumb to that
+        // increment (e.g. 4 for a multiples-of-4 slider) rather than moving
+        // continuously - the value sent to commandName still comes straight
+        // from slider.Value, so whatever Core-side setter is on the other
+        // end stays the authority on the actual stored value.
+        public void AddDynamicSlider(string? section, string label, double min, double max, double initialValue, string commandName, double step = 0)
         {
             var sectionPanel = GetOrCreateSection(section);
 
@@ -478,6 +496,12 @@ namespace RevitPluginTest
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 4, 4, 4)
             };
+
+            if (step > 0)
+            {
+                slider.IsSnapToTickEnabled = true;
+                slider.TickFrequency = step;
+            }
 
             slider.ValueChanged += (sender, e) =>
             {

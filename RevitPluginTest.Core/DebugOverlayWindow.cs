@@ -9,6 +9,7 @@ using Autodesk.Revit.UI;
 using RevitPluginTest;
 using Line = System.Windows.Shapes.Line;
 using Ellipse = System.Windows.Shapes.Ellipse;
+using Rectangle = System.Windows.Shapes.Rectangle;
 using Point = System.Windows.Point;
 
 namespace RevitPluginTest.Core
@@ -161,6 +162,56 @@ namespace RevitPluginTest.Core
                     Canvas.SetTop(ellipse, (center.Y - bounds.Top) / dpiScale - pixelRadius);
                     _canvas.Children.Add(ellipse);
                 }
+            }
+
+            foreach (var rectangle in DebugDraw.Rectangles)
+            {
+                var corners = new[]
+                {
+                    new XYZ(rectangle.Min.X, rectangle.Min.Y, rectangle.Min.Z),
+                    new XYZ(rectangle.Max.X, rectangle.Min.Y, rectangle.Min.Z),
+                    new XYZ(rectangle.Max.X, rectangle.Max.Y, rectangle.Min.Z),
+                    new XYZ(rectangle.Min.X, rectangle.Max.Y, rectangle.Min.Z)
+                };
+
+                var projectedCorners = new Point[corners.Length];
+                var allProjected = true;
+
+                for (var i = 0; i < corners.Length; i++)
+                {
+                    if (!ViewProjector.TryProject(view, uiView, corners[i], out projectedCorners[i]))
+                    {
+                        allProjected = false;
+                        break;
+                    }
+                }
+
+                if (!allProjected)
+                {
+                    continue;
+                }
+
+                // Bounding box of the projected corners rather than just two
+                // opposite corners - correct for any plan view rotation, not
+                // only ones aligned to world X/Y.
+                var minX = projectedCorners.Min(p => p.X);
+                var maxX = projectedCorners.Max(p => p.X);
+                var minY = projectedCorners.Min(p => p.Y);
+                var maxY = projectedCorners.Max(p => p.Y);
+
+                var brush = new SolidColorBrush(rectangle.Color);
+
+                var shape = new Rectangle
+                {
+                    Width = Math.Max((maxX - minX) / dpiScale, 0),
+                    Height = Math.Max((maxY - minY) / dpiScale, 0),
+                    Stroke = brush,
+                    StrokeThickness = rectangle.Thickness,
+                    Fill = rectangle.Filled ? brush : Brushes.Transparent
+                };
+                Canvas.SetLeft(shape, (minX - bounds.Left) / dpiScale);
+                Canvas.SetTop(shape, (minY - bounds.Top) / dpiScale);
+                _canvas.Children.Add(shape);
             }
 
             foreach (var text in DebugDraw.Texts)
