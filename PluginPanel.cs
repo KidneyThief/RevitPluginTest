@@ -395,15 +395,27 @@ namespace RevitPluginTest
             GetOrCreateSection(section).Children.Add(CreateCommandButton(label, commandName));
         }
 
-        // Same as AddDynamicButton, but its Content polls
-        // OverlayState.IsAddingObstruction (250ms, same cadence as the
-        // overlay visibility checkbox) and swaps to activeLabel while true.
+        // Same as AddDynamicButton, but its Content polls the given
+        // OverlayState flag (250ms, same cadence as the overlay visibility
+        // checkbox) and swaps to activeLabel while true. isActive is a
+        // Host-authored closure over a Host-owned static (OverlayState) -
+        // safe to hold onto, unlike a delegate handed in from Core, which
+        // would pin Core's ALC alive.
         public void AddDynamicObstructionButton(string? section, string idleLabel, string activeLabel, string commandName)
+            => AddDynamicToggleButton(section, idleLabel, activeLabel, () => OverlayState.IsAddingObstruction, commandName);
+
+        public void AddDynamicPathStartButton(string? section, string idleLabel, string activeLabel, string commandName)
+            => AddDynamicToggleButton(section, idleLabel, activeLabel, () => OverlayState.IsSettingPathStart, commandName);
+
+        public void AddDynamicPathEndButton(string? section, string idleLabel, string activeLabel, string commandName)
+            => AddDynamicToggleButton(section, idleLabel, activeLabel, () => OverlayState.IsSettingPathEnd, commandName);
+
+        private void AddDynamicToggleButton(string? section, string idleLabel, string activeLabel, Func<bool> isActive, string commandName)
         {
             var button = CreateCommandButton(idleLabel, commandName);
 
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
-            timer.Tick += (sender, e) => button.Content = OverlayState.IsAddingObstruction ? activeLabel : idleLabel;
+            timer.Tick += (sender, e) => button.Content = isActive() ? activeLabel : idleLabel;
             timer.Start();
 
             GetOrCreateSection(section).Children.Add(button);

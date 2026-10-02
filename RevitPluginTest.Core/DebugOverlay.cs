@@ -16,7 +16,7 @@ namespace RevitPluginTest.Core
             _window ??= new DebugOverlayWindow();
             _window.Update(uiApp);
             GridTest.UpdateHighlight(uiApp);
-            GridTest.UpdateObstructionPlacement(uiApp);
+            GridTest.UpdateClickPlacement(uiApp);
             return true;
         }
 

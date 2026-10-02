@@ -24,6 +24,17 @@ namespace RevitPluginTest
             Current?.AddDynamicObstructionButton(section, idleLabel, activeLabel, commandName);
         }
 
+        // Same idea, reflecting OverlayState.IsSettingPathStart/PathEnd.
+        public static void AddPathStartButton(string? section, string idleLabel, string activeLabel, string commandName)
+        {
+            Current?.AddDynamicPathStartButton(section, idleLabel, activeLabel, commandName);
+        }
+
+        public static void AddPathEndButton(string? section, string idleLabel, string activeLabel, string commandName)
+        {
+            Current?.AddDynamicPathEndButton(section, idleLabel, activeLabel, commandName);
+        }
+
         public static void AddDropdown(string? section, string label, IReadOnlyList<string> options, string commandName)
         {
             Current?.AddDynamicDropdown(section, label, options, commandName);

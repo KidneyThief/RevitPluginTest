@@ -10,9 +10,11 @@ namespace RevitPluginTest
         public static bool UserWantsVisible { get; set; } = true;
         public static bool IsViewSupported { get; set; } = true;
 
-        // Written by GridTest (Core) while armed for the next obstruction
-        // click; polled by the "Add Obstruction" button's label, same bridge
-        // pattern as the two flags above.
+        // Written by GridTest (Core) while armed for the next obstruction /
+        // path-start / path-end click; polled by that button's own label,
+        // same bridge pattern as the two flags above.
         public static bool IsAddingObstruction { get; set; }
+        public static bool IsSettingPathStart { get; set; }
+        public static bool IsSettingPathEnd { get; set; }
     }
 }

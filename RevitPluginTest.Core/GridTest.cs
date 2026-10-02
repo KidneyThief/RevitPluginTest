@@ -14,6 +14,10 @@ namespace RevitPluginTest.Core
         private static int _gridResolution = 4;
         private static int _obstructionSize = 5;
 
+        // Minimum straight-line distance required after a turn before
+        // another turn is permitted (see TryCreateSuccessor).
+        private static int _turnMinDistance = 1;
+
         // Core-owned, same reload-safety reasoning as GraphTestFunctions'
         // _graph field - doesn't survive a reload, but doesn't need to.
         //
@@ -42,13 +46,39 @@ namespace RevitPluginTest.Core
         private static (long X, long Y, long Z)? _highlightedKey;
         private static Color? _highlightedColor;
 
-        // Armed by the "Add Obstruction" button; consumed by the next fresh
-        // left-click detected in UpdateObstructionPlacement. _wasLeftButtonDown
-        // tracks the button's state from the previous tick so a held-down
-        // click (e.g. the one that pressed the button itself) doesn't
-        // re-trigger - only a 0->1 transition counts.
+        // Armed by the "Add Obstruction"/"PathStart"/"PathEnd" buttons;
+        // consumed by the next fresh left-click detected in
+        // UpdateClickPlacement. _wasLeftButtonDown tracks the button's state
+        // from the previous tick so a held-down click (e.g. the one that
+        // pressed the arming button itself) doesn't re-trigger - only a
+        // 0->1 transition counts.
         private static bool _waitingForObstructionClick;
+        private static bool _waitingForPathStartClick;
+        private static bool _waitingForPathEndClick;
         private static bool _wasLeftButtonDown;
+
+        // Cached grid-cell locations for the pathfinding pass across the
+        // connection graph. Cleared whenever the grid regenerates (see
+        // CreateGrid) - a location from before a regenerate might no longer
+        // correspond to a valid cell.
+        private static XYZ? _pathStart;
+        private static XYZ? _pathEnd;
+
+        // The most recently found path, as an ordered list of connections
+        // from the start cell to the goal cell - empty if none has been
+        // found yet, or if the grid regenerated since (see CreateGrid).
+        // DrawPath derives every waypoint from this rather than storing them
+        // separately - each connection's own _connectLocation and
+        // _neighborLocation are exactly the mid-route and arrival points for
+        // that hop.
+        private static readonly List<GridConnection> _path = new();
+
+        // Set when the most recent FindPath genuinely exhausted the search
+        // without reaching the goal (not when it never ran at all, e.g.
+        // PathStart/PathEnd unset) - DrawPath uses this to show a red line
+        // straight from _pathStart to _pathEnd as a "no route found"
+        // indicator instead of the normal green route.
+        private static bool _pathSearchFailed;
 
         // Toggled by the "Connections" checkbox - swaps DrawGrid between its
         // normal cell rectangles and a view of just the connection graph.
@@ -57,28 +87,49 @@ namespace RevitPluginTest.Core
 
         public static int GridResolution => _gridResolution;
 
-        // No longer independently settable - always exactly a quarter of
-        // GridResolution, so it divides GridResolution evenly by
-        // construction (4 fine cells per coarse cell per axis). A
-        // user-chosen FineResolution that didn't evenly divide GridResolution
-        // was the actual cause of the gaps between fine cells - the clip in
-        // AddFineCells prevented overlaps, but left slivers wherever the
-        // division wasn't exact. GridResolution is itself constrained to
-        // multiples of 4 (see SetGridResolution), so this integer division
-        // is always exact - never truncates a fraction away.
-        public static int FineResolution => _gridResolution / 4;
+        // No longer independently settable - always the smallest whole
+        // divisor of GridResolution that's still >= 4, i.e. the finest
+        // subdivision possible without dropping under FineResolution's own
+        // minimum. E.g. GridResolution 15 -> 5 (not 15 - 3 divides 15 and
+        // gives exactly 5, finer than the no-op of not subdividing at all,
+        // and no smaller divisor of 15 reaches 4). GridResolution 20 -> 4
+        // (4 itself divides 20 evenly, so there's no need to settle for the
+        // coarser 5 that GridResolution / 4 alone would suggest).
+        // GridResolution below 8 has no divisor besides itself that's >= 4
+        // (half of anything under 8 is under 4), so FineResolution just
+        // equals GridResolution there - subdivision near an obstruction
+        // becomes a no-op in that case, since a "fine" cell the same size as
+        // the coarse cell it replaces still overlaps whatever the coarse
+        // cell did.
+        public static int FineResolution
+        {
+            get
+            {
+                for (var candidate = 4; candidate < _gridResolution; candidate++)
+                {
+                    if (_gridResolution % candidate == 0)
+                    {
+                        return candidate;
+                    }
+                }
+
+                return _gridResolution;
+            }
+        }
 
         public static int ObstructionSize => _obstructionSize;
         public static bool ShowConnections => _showConnections;
+        public static int TurnMinDistance => _turnMinDistance;
 
-        // The panel slider reports a raw double - snapped to the nearest
-        // (nonzero) multiple of 4 here rather than relying on the slider to
-        // snap, so GridResolution / FineResolution == 4 always holds exactly.
+        // No longer constrained to multiples of 4 - the panel slider reports
+        // a raw double, rounded to the nearest whole number here rather than
+        // relying on the slider to snap. FineResolution no longer needs
+        // GridResolution to be a multiple of anything in particular; it
+        // finds its own valid divisor (see its getter).
         [Schedulable("SetGridResolution", Quiet = true)]
         public static bool SetGridResolution(double resolution)
         {
-            var nearestMultipleOf4 = (int)Math.Round(resolution / 4.0) * 4;
-            _gridResolution = Math.Max(nearestMultipleOf4, 4);
+            _gridResolution = Math.Max((int)Math.Round(resolution), 4);
             return true;
         }
 
@@ -86,6 +137,13 @@ namespace RevitPluginTest.Core
         public static bool SetObstructionSize(double size)
         {
             _obstructionSize = (int)Math.Round(size);
+            return true;
+        }
+
+        [Schedulable("SetTurnMinDistance", Quiet = true)]
+        public static bool SetTurnMinDistance(double value)
+        {
+            _turnMinDistance = (int)Math.Round(value);
             return true;
         }
 
@@ -100,14 +158,36 @@ namespace RevitPluginTest.Core
         }
 
         // Arms obstruction placement - the next fresh left-click detected in
-        // UpdateObstructionPlacement (every Idling tick) places the
-        // obstruction and disarms.
+        // UpdateClickPlacement (every Idling tick) places the obstruction
+        // and disarms.
         [Schedulable("AddObstruction")]
         public static bool AddObstruction()
         {
             _waitingForObstructionClick = true;
             OverlayState.IsAddingObstruction = true;
             Logger.Log("AddObstruction: click a location in the view to place an obstruction.");
+            return true;
+        }
+
+        // Arms path-start placement - the next fresh left-click detected in
+        // UpdateClickPlacement caches the clicked grid cell's location as
+        // _pathStart (only if the click actually landed inside a cell) and
+        // disarms.
+        [Schedulable("PathStart")]
+        public static bool PathStart()
+        {
+            _waitingForPathStartClick = true;
+            OverlayState.IsSettingPathStart = true;
+            Logger.Log("PathStart: click a grid cell to set the path start.");
+            return true;
+        }
+
+        [Schedulable("PathEnd")]
+        public static bool PathEnd()
+        {
+            _waitingForPathEndClick = true;
+            OverlayState.IsSettingPathEnd = true;
+            Logger.Log("PathEnd: click a grid cell to set the path end.");
             return true;
         }
 
@@ -124,12 +204,12 @@ namespace RevitPluginTest.Core
         // of any obstruction (IsNearAnyObstruction, buffered) - anywhere
         // closer falls back to AddFineCells. AddFineCells anchors its
         // sub-grid to the coarse cell's own edges, which are shared exactly
-        // with every neighboring coarse cell, and FineResolution is always
-        // exactly a quarter of GridResolution (see the FineResolution
-        // property) - so it divides evenly by construction and fine cells
-        // tile seamlessly against both fine and coarse neighbors with no
-        // seam gaps. The only gaps left are where a cell would actually
-        // overlap the obstruction.
+        // with every neighboring coarse cell, and FineResolution is always a
+        // whole divisor of GridResolution (see the FineResolution property) -
+        // so it divides evenly by construction and fine cells tile
+        // seamlessly against both fine and coarse neighbors with no seam
+        // gaps. The only gaps left are where a cell would actually overlap
+        // the obstruction.
         [Schedulable("CreateGrid")]
         public static bool CreateGrid()
         {
@@ -144,6 +224,10 @@ namespace RevitPluginTest.Core
             _cells.Clear();
             _highlightedKey = null;
             _highlightedColor = null;
+            _pathStart = null;
+            _pathEnd = null;
+            _path.Clear();
+            _pathSearchFailed = false;
 
             var halfWidth = GridWidth / 2.0;
             var halfHeight = GridHeight / 2.0;
@@ -219,7 +303,7 @@ namespace RevitPluginTest.Core
         // own bucket, plus the ones reached by stepping +/- BucketSize along
         // each axis. `location` doesn't need to be an existing grid point
         // itself - an arbitrary query point (e.g. the mouse) works the same
-        // way, since the largest cell is exactly 2*BucketSize wide, so
+        // way, since the largest cell is exactly BucketSize wide, so
         // anything that could be edge-adjacent to it, or contain it, has its
         // own center within one bucket-width of `location`. Deduplicated via
         // the HashSet of keys first, since a location near a bucket boundary
@@ -252,8 +336,31 @@ namespace RevitPluginTest.Core
             }
         }
 
-        // Connects every pair of edge-adjacent cells with a GridConnection on
-        // each side. For each cell, NearbyGridPoints narrows the search to
+        // The cell whose bounds actually contain `location` (an AABB
+        // containment test, not nearest-by-distance), or null if it's in a
+        // gap - next to an obstruction, or outside the grid entirely.
+        // NearbyGridPoints(location) is enough to find it: whichever cell
+        // contains `location` must have its own center within one
+        // bucket-width of it, since no cell is wider than BucketSize.
+        private static GridCell? FindContainingCell(XYZ location)
+        {
+            foreach (var candidate in NearbyGridPoints(location))
+            {
+                var candidateCell = _cells[CellKey(candidate)];
+
+                if (location.X >= candidateCell.MinXY.X && location.X <= candidateCell.MaxXY.X &&
+                    location.Y >= candidateCell.MinXY.Y && location.Y <= candidateCell.MaxXY.Y)
+                {
+                    return candidateCell;
+                }
+            }
+
+            return null;
+        }
+
+        // Connects every pair of edge- or corner-adjacent cells with a
+        // GridConnection on each side (see TryConnect). For each cell,
+        // NearbyGridPoints narrows the search to
         // its own spatial-hash bucket and the 8 surrounding it instead of an
         // O(n^2) scan over every cell in the grid. visitedPairs guards
         // against processing the same unordered pair twice - each cell's
@@ -291,19 +398,23 @@ namespace RevitPluginTest.Core
         {
             if (TryGetSharedEdge(a, b, alongX: true, out var connectLocation))
             {
-                Connect(a, b, connectLocation, GridConnectionDirection.Right, GridConnectionDirection.Left);
+                Connect(a, b, connectLocation, GridConnectionDirection.E, GridConnectionDirection.W);
             }
             else if (TryGetSharedEdge(b, a, alongX: true, out connectLocation))
             {
-                Connect(a, b, connectLocation, GridConnectionDirection.Left, GridConnectionDirection.Right);
+                Connect(a, b, connectLocation, GridConnectionDirection.W, GridConnectionDirection.E);
             }
             else if (TryGetSharedEdge(a, b, alongX: false, out connectLocation))
             {
-                Connect(a, b, connectLocation, GridConnectionDirection.Up, GridConnectionDirection.Down);
+                Connect(a, b, connectLocation, GridConnectionDirection.N, GridConnectionDirection.S);
             }
             else if (TryGetSharedEdge(b, a, alongX: false, out connectLocation))
             {
-                Connect(a, b, connectLocation, GridConnectionDirection.Down, GridConnectionDirection.Up);
+                Connect(a, b, connectLocation, GridConnectionDirection.S, GridConnectionDirection.N);
+            }
+            else if (TryGetSharedCorner(a, b, out connectLocation, out var aToB, out var bToA))
+            {
+                Connect(a, b, connectLocation, aToB, bToA);
             }
         }
 
@@ -346,19 +457,83 @@ namespace RevitPluginTest.Core
             return true;
         }
 
+        // True if `a` and `b` touch at exactly one point - a shared corner,
+        // not a shared edge (TryGetSharedEdge already claims any pair that
+        // overlaps along the perpendicular axis, so by the time this runs
+        // neither cell's edge actually overlaps the other's - they can only
+        // be touching at their corners, if at all). Requires both axes to
+        // touch at a boundary simultaneously: a's far/near edge lines up
+        // with b's near/far edge on X, and independently on Y. connectLocation
+        // is that single shared point - there's no "edge" to take a midpoint
+        // of the way TryGetSharedEdge does.
+        private static bool TryGetSharedCorner(GridCell a, GridCell b, out XYZ connectLocation, out GridConnectionDirection aToB, out GridConnectionDirection bToA)
+        {
+            connectLocation = XYZ.Zero;
+            aToB = GridConnectionDirection.None;
+            bToA = GridConnectionDirection.None;
+
+            double sharedX;
+            bool bIsEast;
+
+            if (Math.Abs(a.MaxXY.X - b.MinXY.X) < AdjacencyEpsilon)
+            {
+                sharedX = a.MaxXY.X;
+                bIsEast = true;
+            }
+            else if (Math.Abs(a.MinXY.X - b.MaxXY.X) < AdjacencyEpsilon)
+            {
+                sharedX = a.MinXY.X;
+                bIsEast = false;
+            }
+            else
+            {
+                return false;
+            }
+
+            double sharedY;
+            bool bIsNorth;
+
+            if (Math.Abs(a.MaxXY.Y - b.MinXY.Y) < AdjacencyEpsilon)
+            {
+                sharedY = a.MaxXY.Y;
+                bIsNorth = true;
+            }
+            else if (Math.Abs(a.MinXY.Y - b.MaxXY.Y) < AdjacencyEpsilon)
+            {
+                sharedY = a.MinXY.Y;
+                bIsNorth = false;
+            }
+            else
+            {
+                return false;
+            }
+
+            connectLocation = new XYZ(sharedX, sharedY, 0);
+
+            aToB = bIsNorth
+                ? (bIsEast ? GridConnectionDirection.NE : GridConnectionDirection.NW)
+                : (bIsEast ? GridConnectionDirection.SE : GridConnectionDirection.SW);
+
+            bToA = bIsNorth
+                ? (bIsEast ? GridConnectionDirection.SW : GridConnectionDirection.SE)
+                : (bIsEast ? GridConnectionDirection.NW : GridConnectionDirection.NE);
+
+            return true;
+        }
+
         private static void Connect(GridCell a, GridCell b, XYZ connectLocation, GridConnectionDirection aToB, GridConnectionDirection bToA)
         {
             a.Connections.Add(new GridConnection(connectLocation, b.Location, aToB));
             b.Connections.Add(new GridConnection(connectLocation, a.Location, bToA));
         }
 
-        // Subdivides one coarse cell's footprint (min/max) into FineResolution
-        // cells (always exactly 4x4 = 16, since FineResolution is fixed at a
-        // quarter of GridResolution), keeping only the ones that don't
-        // overlap an obstruction. The overhang clip below is now just a
-        // defensive backstop against floating-point rounding at the last
-        // step, not a real divisibility gap - FineResolution * 4 ==
-        // GridResolution exactly, by construction.
+        // Subdivides one coarse cell's footprint (min/max) into a square
+        // grid of FineResolution cells - (GridResolution / FineResolution)
+        // on a side, always a whole number since FineResolution is always a
+        // whole divisor of GridResolution (see its getter) - keeping only
+        // the ones that don't overlap an obstruction. The overhang clip
+        // below is now just a defensive backstop against floating-point
+        // rounding at the last step, not a real divisibility gap.
         private static int AddFineCells(XYZ boundsMin, XYZ boundsMax)
         {
             var fineResolution = FineResolution;
@@ -448,11 +623,26 @@ namespace RevitPluginTest.Core
             else
             {
                 DrawCells();
+                DrawPath();
             }
 
             foreach (var (key, obstruction) in _obstructions)
             {
                 DebugDraw.Rectangle(CellDrawId(LocationFromCellKey(key), isObstruction: true), obstruction.MinXY, obstruction.MaxXY, Colors.Red, filled: true);
+            }
+
+            // Drawn regardless of _showConnections, same as obstructions -
+            // these mark the pathfinding endpoints, not the grid's cells.
+            var markerRadius = FineResolution / 3.0;
+
+            if (_pathStart != null)
+            {
+                DebugDraw.Circle(null, _pathStart, markerRadius, Colors.Green);
+            }
+
+            if (_pathEnd != null)
+            {
+                DebugDraw.Circle(null, _pathEnd, markerRadius, Colors.Purple);
             }
 
             return true;
@@ -519,20 +709,8 @@ namespace RevitPluginTest.Core
                 return;
             }
 
-            (long X, long Y, long Z)? containingKey = null;
-
-            foreach (var candidate in NearbyGridPoints(worldPoint))
-            {
-                var candidateKey = CellKey(candidate);
-                var candidateCell = _cells[candidateKey];
-
-                if (worldPoint.X >= candidateCell.MinXY.X && worldPoint.X <= candidateCell.MaxXY.X &&
-                    worldPoint.Y >= candidateCell.MinXY.Y && worldPoint.Y <= candidateCell.MaxXY.Y)
-                {
-                    containingKey = candidateKey;
-                    break;
-                }
-            }
+            var containingCellFound = FindContainingCell(worldPoint);
+            (long X, long Y, long Z)? containingKey = containingCellFound == null ? null : CellKey(containingCellFound.Location);
 
             if (containingKey == null)
             {
@@ -576,15 +754,20 @@ namespace RevitPluginTest.Core
         // UpdateHighlight. Left-button state is polled directly (the overlay
         // window is click-through, so it never receives mouse events) - a
         // click only counts if it lands inside the active view's viewport,
-        // so clicking the panel itself (e.g. the "Add Obstruction" button)
-        // can never register as the placement click.
-        public static void UpdateObstructionPlacement(UIApplication uiApp)
+        // so clicking the panel itself (e.g. one of the arming buttons)
+        // can never register as the placement click. Dispatches to whichever
+        // of AddObstruction/PathStart/PathEnd is currently armed - only one
+        // click-detection pass runs per tick, since _wasLeftButtonDown is
+        // shared state that can only report a fresh press once per tick.
+        public static void UpdateClickPlacement(UIApplication uiApp)
         {
             var isLeftButtonDown = Win32Interop.IsLeftButtonDown();
             var justPressed = isLeftButtonDown && !_wasLeftButtonDown;
             _wasLeftButtonDown = isLeftButtonDown;
 
-            if (!_waitingForObstructionClick || !justPressed || !Win32Interop.IsForegroundProcess())
+            if (!justPressed ||
+                (!_waitingForObstructionClick && !_waitingForPathStartClick && !_waitingForPathEndClick) ||
+                !Win32Interop.IsForegroundProcess())
             {
                 return;
             }
@@ -608,6 +791,22 @@ namespace RevitPluginTest.Core
                 return;
             }
 
+            if (_waitingForObstructionClick)
+            {
+                PlaceObstruction(worldPoint);
+            }
+            else if (_waitingForPathStartClick)
+            {
+                PlacePathPoint(worldPoint, isStart: true);
+            }
+            else if (_waitingForPathEndClick)
+            {
+                PlacePathPoint(worldPoint, isStart: false);
+            }
+        }
+
+        private static void PlaceObstruction(XYZ worldPoint)
+        {
             var location = new XYZ(Math.Round(worldPoint.X), Math.Round(worldPoint.Y), 0);
 
             // Integer division rather than /2.0 - keeps min/max on whole
@@ -634,6 +833,299 @@ namespace RevitPluginTest.Core
             {
                 CreateGrid();
             }
+        }
+
+        // The click has to land inside an actual cell - the cached location
+        // is a grid-cell center, not an arbitrary point, so a future
+        // pathfinding pass across the connection graph can start/end there.
+        // A miss (obstruction, gap, outside the grid) logs and leaves the
+        // arming flag set so the next click can try again.
+        private static void PlacePathPoint(XYZ worldPoint, bool isStart)
+        {
+            var label = isStart ? "PathStart" : "PathEnd";
+            var containingCell = FindContainingCell(worldPoint);
+
+            if (containingCell == null)
+            {
+                Logger.Log($"{label}: click landed outside any grid cell - try again.");
+                return;
+            }
+
+            // Whichever endpoint just moved invalidates any previously found
+            // path (or failure indicator) - clear both now so nothing stale
+            // lingers on screen past this click.
+            _path.Clear();
+            _pathSearchFailed = false;
+
+            if (isStart)
+            {
+                _pathStart = containingCell.Location;
+                _waitingForPathStartClick = false;
+                OverlayState.IsSettingPathStart = false;
+            }
+            else
+            {
+                _pathEnd = containingCell.Location;
+                _waitingForPathEndClick = false;
+                OverlayState.IsSettingPathEnd = false;
+            }
+
+            Logger.Log($"{label}: set to ({containingCell.Location.X:F0}, {containingCell.Location.Y:F0}).");
+
+            // Setting PathEnd is the natural "go" trigger, since both
+            // endpoints are only ever complete once this one lands. FindPath
+            // draws the result itself on success; on failure (including
+            // PathStart not being set yet) we still need a redraw so the
+            // just-cleared _path and the moved marker actually show up.
+            var pathFound = !isStart && FindPath();
+
+            if (!pathFound)
+            {
+                DrawGrid();
+            }
+        }
+
+        // A*: validates PathStart/PathEnd, resolves their containing cells,
+        // then repeatedly pops the lowest-TotalCost node and expands it via
+        // TryCreateSuccessor until one popped node is actually at the goal
+        // cell. The start node's _connectDirection is None - it arrived
+        // from nowhere, so it has nothing to double back on and no turn
+        // penalty (see TryCreateSuccessor).
+        //
+        // visited is a closed set keyed by exactly the three things that
+        // make a search state unique (StateKey): cell, arrival direction,
+        // and distance since the last turn. Since every edge cost is
+        // non-negative, the first time a given state is popped it's already
+        // at its lowest possible cost - later duplicate entries for that
+        // same state (PriorityQueue has no decrease-key, so a cheaper
+        // rediscovery is just enqueued again rather than updated in place)
+        // are safely skipped instead of re-expanded.
+        [Schedulable("FindPath")]
+        public static bool FindPath()
+        {
+            if (_pathStart == null || _pathEnd == null)
+            {
+                Logger.Log("FindPath: set both PathStart and PathEnd first.");
+                return false;
+            }
+
+            var startCell = FindContainingCell(_pathStart);
+            var endCell = FindContainingCell(_pathEnd);
+
+            if (startCell == null || endCell == null)
+            {
+                Logger.Log("FindPath: PathStart or PathEnd is no longer inside a grid cell - set them again.");
+                return false;
+            }
+
+            if (ReferenceEquals(startCell, endCell))
+            {
+                Logger.Log("FindPath: PathStart and PathEnd are the same cell.");
+                return false;
+            }
+
+            var heap = new PriorityQueue<GridSearchNode, double>();
+            var startNode = new GridSearchNode(startCell, null, null, GridConnectionDirection.None, 0, startCell.Location.DistanceTo(endCell.Location), 0, 0);
+            heap.Enqueue(startNode, startNode.TotalCost);
+
+            var visited = new HashSet<(long CellX, long CellY, long CellZ, GridConnectionDirection Direction, long DistanceFromLastTurn)>();
+            var endCellKey = CellKey(endCell.Location);
+
+            while (heap.Count > 0)
+            {
+                var current = heap.Dequeue();
+
+                if (!visited.Add(StateKey(current)))
+                {
+                    continue;
+                }
+
+                if (CellKey(current._cell.Location) == endCellKey)
+                {
+                    var pathNodes = ReconstructPath(current);
+                    Logger.Log($"FindPath: found a path with {pathNodes.Count} cell(s), {current._turnCount} turn(s), cost {current._costFromStart:F1}.");
+
+                    _path.Clear();
+                    _pathSearchFailed = false;
+
+                    foreach (var node in pathNodes)
+                    {
+                        if (node._connection != null)
+                        {
+                            _path.Add(node._connection);
+                        }
+                    }
+
+                    DrawGrid();
+                    return true;
+                }
+
+                foreach (var connection in current._cell.Connections)
+                {
+                    var successor = TryCreateSuccessor(current, connection);
+
+                    if (successor != null && !visited.Contains(StateKey(successor)))
+                    {
+                        heap.Enqueue(successor, successor.TotalCost);
+                    }
+                }
+            }
+
+            Logger.Log("FindPath: no path found.");
+            _pathSearchFailed = true;
+            DrawGrid();
+            return false;
+        }
+
+        // See FindPath's comment on `visited` - distanceFromLastTurn is
+        // rounded the same way CellKey rounds a location, so two states that
+        // are the same up to floating-point noise still key as equal.
+        private static (long CellX, long CellY, long CellZ, GridConnectionDirection Direction, long DistanceFromLastTurn) StateKey(GridSearchNode node)
+        {
+            var cellKey = CellKey(node._cell.Location);
+            return (cellKey.X, cellKey.Y, cellKey.Z, node._connectDirection, (long)Math.Round(node._distanceFromLastTurn * 1000));
+        }
+
+        private static List<GridSearchNode> ReconstructPath(GridSearchNode goalNode)
+        {
+            var path = new List<GridSearchNode>();
+            var node = goalNode;
+
+            while (node != null)
+            {
+                path.Add(node);
+                node = node._parent;
+            }
+
+            path.Reverse();
+            return path;
+        }
+
+        // Draws the cached _path (called only from DrawGrid's non-Connections
+        // branch) as a right-angle polyline: origin -> first connectLocation
+        // -> first neighborLocation (the cell just entered, i.e. the
+        // "mid-point") -> next connectLocation -> next neighborLocation ->
+        // ... Routing every hop through each cell's own center rather than
+        // straight between consecutive connectLocations is what produces a
+        // proper right-angle elbow at a turn, instead of cutting the corner
+        // diagonally. The last neighborLocation lands exactly on _pathEnd.
+        // Green lines for the segments; blue circles at every point except
+        // the origin (already marked by its own green PathStart circle) -
+        // that covers both each connectLocation and each intermediate
+        // cell-center.
+        private static void DrawPath()
+        {
+            if (_pathSearchFailed && _pathStart != null && _pathEnd != null)
+            {
+                DebugDraw.Line(null, _pathStart, _pathEnd, Colors.Red, thickness: 3);
+                return;
+            }
+
+            if (_path.Count == 0 || _pathStart == null)
+            {
+                return;
+            }
+
+            var points = new List<XYZ> { _pathStart };
+
+            foreach (var connection in _path)
+            {
+                points.Add(connection._connectLocation);
+                points.Add(connection._neighborLocation);
+            }
+
+            for (var i = 0; i < points.Count - 1; i++)
+            {
+                DebugDraw.Line(null, points[i], points[i + 1], Colors.Green, thickness: 3);
+            }
+
+            var markerRadius = FineResolution / 4.0;
+
+            for (var i = 1; i < points.Count; i++)
+            {
+                DebugDraw.Circle(null, points[i], markerRadius, Colors.Blue);
+            }
+        }
+
+        // Compass bearing in degrees, clockwise from N - used to measure how
+        // sharp a turn between two directions actually is.
+        private static readonly Dictionary<GridConnectionDirection, int> DirectionBearings = new()
+        {
+            { GridConnectionDirection.N, 0 },
+            { GridConnectionDirection.NE, 45 },
+            { GridConnectionDirection.E, 90 },
+            { GridConnectionDirection.SE, 135 },
+            { GridConnectionDirection.S, 180 },
+            { GridConnectionDirection.SW, 225 },
+            { GridConnectionDirection.W, 270 },
+            { GridConnectionDirection.NW, 315 }
+        };
+
+        // A turn is only permitted if it's 90 degrees or less - e.g. from N,
+        // only N/NE/E/W/NW are reachable; S, SE, and SW all require sharper
+        // turns than that and are disallowed, not just the exact 180-degree
+        // opposite (S). Covers the diagonals too, even though TryConnect
+        // can't produce them yet, so this stays correct once something does.
+        private static bool IsDisallowedTurn(GridConnectionDirection from, GridConnectionDirection to)
+        {
+            var fromBearing = DirectionBearings[from];
+            var toBearing = DirectionBearings[to];
+            var difference = Math.Abs(fromBearing - toBearing);
+            difference = Math.Min(difference, 360 - difference);
+
+            return difference > 90;
+        }
+
+        // Builds the node reached by following `connection` away from
+        // `current` - null if that's not permitted:
+        //   - Any turn sharper than 90 degrees off the direction `current`
+        //     arrived from is never allowed (see IsDisallowedTurn) - not
+        //     just the exact 180-degree double-back.
+        //   - A turn of 90 degrees or less (leaving in a direction other
+        //     than the one `current` arrived from) is only allowed once
+        //     current._distanceFromLastTurn has reached TurnMinDistance -
+        //     otherwise we're locked into continuing straight until that
+        //     minimum run is satisfied.
+        // The start node (_connectDirection None) has no incoming direction
+        // to compare against, so its first move is never a turn and is
+        // never gated by TurnMinDistance.
+        //
+        // Turning also adds a full GridResolution to _costFromStart (on top
+        // of the actual step distance) - since A* always expands the lowest
+        // TotalCost node next, and the heuristic (straight-line distance,
+        // which ignores turn penalties entirely) still never overestimates
+        // the true remaining cost, this keeps the search optimal while
+        // biasing it toward whichever path racks up the fewest such
+        // penalties - i.e. the fewest turns - among paths of comparable
+        // physical length. A path that turns more can still win if its
+        // extra turn buys it a large enough distance saving to outweigh the
+        // GridResolution penalty, which is the intended tradeoff rather than
+        // an outright ban on turning.
+        private static GridSearchNode? TryCreateSuccessor(GridSearchNode current, GridConnection connection)
+        {
+            var direction = connection._connectionDirection;
+            var isFirstMove = current._connectDirection == GridConnectionDirection.None;
+
+            if (!isFirstMove && IsDisallowedTurn(current._connectDirection, direction))
+            {
+                return null;
+            }
+
+            var isTurn = !isFirstMove && direction != current._connectDirection;
+
+            if (isTurn && current._distanceFromLastTurn < _turnMinDistance)
+            {
+                return null;
+            }
+
+            var neighborCell = _cells[CellKey(connection._neighborLocation)];
+            var stepCost = current._cell.Location.DistanceTo(neighborCell.Location);
+            var turnCount = current._turnCount + (isTurn ? 1 : 0);
+            var costFromStart = current._costFromStart + stepCost + (isTurn ? _gridResolution : 0);
+            var estimateToDestination = _pathEnd == null ? 0 : neighborCell.Location.DistanceTo(_pathEnd);
+            var distanceFromLastTurn = isFirstMove || isTurn ? stepCost : current._distanceFromLastTurn + stepCost;
+
+            return new GridSearchNode(neighborCell, current, connection, direction, costFromStart, estimateToDestination, turnCount, distanceFromLastTurn);
         }
 
         // Standard AABB overlap test - cells that merely touch edges (no
